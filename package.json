@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+    "playwright": "^1.61.0",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  }
+}
