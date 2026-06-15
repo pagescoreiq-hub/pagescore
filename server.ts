@@ -21,6 +21,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { chromium, Browser } from "playwright";
 import { runFullAudit, FullAuditOptions, FullAuditReport } from "./audit-modules";
+import { loadR2ConfigFromEnv, saveReportToR2, SavedReport } from "./lib/r2-storage";
 
 // __dirname is not available in ESM — derive it from import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -178,7 +179,19 @@ async function handleFullAudit(req: Req, res: Res) {
     const durationMs = Date.now() - startMs;
     console.log(`[audit] Done in ${(durationMs / 1000).toFixed(1)}s - Score: ${report.overallScore}/100 Grade: ${report.grade}`);
 
-    json(res, 200, { success: true, durationMs, data: report });
+    // Save the report to Cloudflare R2 (best-effort — never fails the audit).
+    let saved: SavedReport | null = null;
+    const r2 = loadR2ConfigFromEnv();
+    if (r2) {
+      try {
+        saved = await saveReportToR2(report, r2);
+        console.log(`[audit] Report saved to R2: ${saved.htmlUrl}`);
+      } catch (e: any) {
+        console.error(`[audit] R2 save failed (audit still returned): ${e.message}`);
+      }
+    }
+
+    json(res, 200, { success: true, durationMs, data: report, report: saved });
   } catch (e: any) {
     console.error(`[audit] Failed: ${e.message}`);
     json(res, 500, { success: false, error: e.message });
