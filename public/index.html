@@ -217,7 +217,10 @@
     <h1>PageScoreIQ <span class="vbadge">v2.0</span></h1>
     <p>Google Ads Landing Page Compliance Audit — 10 Modules</p>
   </div>
-  <div class="header-right">Powered by Playwright</div>
+  <div class="header-right" style="display:flex;align-items:center;gap:14px;">
+    <span>Powered by Playwright</span>
+    <button onclick="doLogout()" style="background:rgba(255,255,255,0.18);color:white;border:none;border-radius:8px;padding:6px 12px;font-size:11px;font-weight:700;cursor:pointer;">Sign out</button>
+  </div>
 </header>
 
 <div class="container">
@@ -289,6 +292,15 @@
     <!-- MODULE DETAIL BREAKDOWN -->
     <div class="card-title" style="padding: 0 4px 10px">📋 Detailed Checklist Breakdown</div>
     <div id="modules-detail"></div>
+
+    <div class="card" id="report-link-card" style="display:none;text-align:center;">
+      <div class="card-title" style="justify-content:center;">📄 Saved Report</div>
+      <p style="font-size:13px;color:#718096;margin-bottom:14px;">This audit was saved to cloud storage. Download the PDF or open the full HTML report.</p>
+      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
+        <a id="link-pdf"  target="_blank" rel="noopener" style="display:none;padding:10px 18px;background:linear-gradient(135deg,#3182ce,#2b6cb0);color:white;border-radius:9px;font-size:13px;font-weight:700;text-decoration:none;">⬇ Download PDF</a>
+        <a id="link-html" target="_blank" rel="noopener" style="display:none;padding:10px 18px;background:white;color:#3182ce;border:2px solid #bee3f8;border-radius:9px;font-size:13px;font-weight:700;text-decoration:none;">↗ Open HTML report</a>
+      </div>
+    </div>
 
     <div class="audit-meta" id="audit-meta"></div>
     <button class="btn-reset" onclick="resetAudit()">← Run Another Audit</button>
@@ -383,8 +395,9 @@
       const json = await resp.json();
       stopProgress();
 
+      if (resp.status === 401) { window.location.href = '/login'; return; }
       if (!resp.ok || !json.success) throw new Error(json.error || 'Audit failed');
-      renderResults(json.data, json.durationMs);
+      renderResults(json.data, json.durationMs, json.report);
 
     } catch(e) {
       stopProgress();
@@ -397,8 +410,21 @@
   }
 
   /* ── Render results ── */
-  function renderResults(report, durationMs) {
+  function renderResults(report, durationMs, saved) {
     document.getElementById('loading-card').className = 'card';
+
+    /* Saved-report links (PDF / HTML) */
+    const linkCard = document.getElementById('report-link-card');
+    const pdfA  = document.getElementById('link-pdf');
+    const htmlA = document.getElementById('link-html');
+    pdfA.style.display = 'none'; htmlA.style.display = 'none';
+    if (saved && (saved.pdfUrl || saved.htmlUrl)) {
+      if (saved.pdfUrl)  { pdfA.href  = saved.pdfUrl;  pdfA.style.display  = 'inline-block'; }
+      if (saved.htmlUrl) { htmlA.href = saved.htmlUrl; htmlA.style.display = 'inline-block'; }
+      linkCard.style.display = 'block';
+    } else {
+      linkCard.style.display = 'none';
+    }
 
     /* Grade */
     const gr = document.getElementById('grade-ring');
@@ -522,6 +548,11 @@
     document.getElementById('err-box').className = 'error-box';
     document.getElementById('prog-fill').style.width = '0%';
     window.scrollTo({ top: 0 });
+  }
+
+  async function doLogout() {
+    try { await fetch('/logout', { method: 'POST' }); } catch (e) {}
+    window.location.href = '/login';
   }
 
   document.getElementById('inp-url').addEventListener('keydown', e => { if(e.key==='Enter') startAudit(); });

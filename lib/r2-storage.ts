@@ -34,6 +34,7 @@ export interface SavedReport {
   key: string; // object key of the JSON report
   jsonUrl: string; // link to the JSON report
   htmlUrl: string; // link to the human-readable HTML report
+  pdfUrl?: string; // link to the PDF report (only if a PDF was provided)
   public: boolean; // true = permanent public link, false = presigned (expiring)
 }
 
@@ -60,7 +61,7 @@ export function loadR2ConfigFromEnv(): R2Config | null {
 
 // ─── AWS SigV4 signing (built on node:crypto) ─────────────────────────────────
 
-function sha256hex(data: string | Buffer): string {
+function sha256hex(data: string | Uint8Array): string {
   return crypto.createHash("sha256").update(data).digest("hex");
 }
 
@@ -101,7 +102,7 @@ function host(cfg: R2Config): string {
 async function putObject(
   cfg: R2Config,
   key: string,
-  body: string,
+  body: string | Uint8Array,
   contentType: string
 ): Promise<void> {
   const now = new Date();
@@ -151,7 +152,8 @@ async function putObject(
       "x-amz-date": amzDate,
       Authorization: authorization,
     },
-    body,
+    // Buffer/Uint8Array is a valid body at runtime; cast past the strict DOM BodyInit type.
+    body: body as BodyInit,
   });
 
   if (!res.ok) {
@@ -232,14 +234,19 @@ function buildKeyBase(report: FullAuditReport): string {
  */
 export async function saveReportToR2(
   report: FullAuditReport,
-  cfg: R2Config
+  cfg: R2Config,
+  pdfBuffer?: Buffer
 ): Promise<SavedReport> {
   const base = buildKeyBase(report);
   const jsonKey = `${base}.json`;
   const htmlKey = `${base}.html`;
+  const pdfKey = `${base}.pdf`;
 
   await putObject(cfg, jsonKey, JSON.stringify(report, null, 2), "application/json; charset=utf-8");
   await putObject(cfg, htmlKey, renderReportHtml(report), "text/html; charset=utf-8");
+  if (pdfBuffer) {
+    await putObject(cfg, pdfKey, pdfBuffer, "application/pdf");
+  }
 
   const jsonLink = linkFor(cfg, jsonKey);
   const htmlLink = linkFor(cfg, htmlKey);
@@ -248,6 +255,7 @@ export async function saveReportToR2(
     key: jsonKey,
     jsonUrl: jsonLink.url,
     htmlUrl: htmlLink.url,
+    pdfUrl: pdfBuffer ? linkFor(cfg, pdfKey).url : undefined,
     public: jsonLink.isPublic,
   };
 }

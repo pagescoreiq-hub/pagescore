@@ -21,11 +21,28 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { chromium, Browser } from "playwright";
 import { runFullAudit, FullAuditOptions, FullAuditReport } from "./audit-modules";
-import { loadR2ConfigFromEnv, saveReportToR2, SavedReport } from "./lib/r2-storage";
+import { loadR2ConfigFromEnv, saveReportToR2, SavedReport, renderReportHtml } from "./lib/r2-storage";
+import {
+  checkCredentials,
+  createSessionToken,
+  verifySessionToken,
+  parseCookies,
+  buildSetCookie,
+  buildClearCookie,
+  SESSION_COOKIE,
+} from "./lib/auth";
 
 // __dirname is not available in ESM — derive it from import.meta.url
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
+
+// Load a local .env if present (Node 20.12+ built-in). On Railway, variables are
+// injected directly and no .env file exists — loadEnvFile throws, so we ignore it.
+try {
+  process.loadEnvFile(path.join(__dirname, ".env"));
+} catch {
+  /* no .env file — using process.env as-is */
+}
 
 // -- Config --------------------------------------------------------------------
 
@@ -64,6 +81,27 @@ async function runAudit(options: FullAuditOptions): Promise<FullAuditReport> {
     await page.goto(options.url, { waitUntil: "load", timeout: 60_000 });
     await page.waitForTimeout(2000);
     return await runFullAudit(page, options);
+  } finally {
+    await context.close();
+  }
+}
+
+// -- PDF rendering -------------------------------------------------------------
+
+/** Render the report's HTML into a PDF buffer using the Chromium instance. */
+async function renderReportPdf(report: FullAuditReport): Promise<Buffer> {
+  const b = await getBrowser();
+  const context = await b.newContext();
+  const page = await context.newPage();
+  try {
+    const html = renderReportHtml(report);
+    await page.setContent(html, { waitUntil: "load" });
+    const pdf = await page.pdf({
+      format: "A4",
+      printBackground: true,
+      margin: { top: "16px", bottom: "16px", left: "16px", right: "16px" },
+    });
+    return pdf;
   } finally {
     await context.close();
   }
@@ -109,6 +147,54 @@ function validateUrl(url: unknown): string {
   } catch {
     throw new Error(`Invalid URL: "${url}" - must be a full URL including https://`);
   }
+}
+
+// -- Auth helpers --------------------------------------------------------------
+
+/** True if the request carries a valid session cookie. */
+function isAuthed(req: Req): boolean {
+  const cookies = parseCookies(req.headers.cookie);
+  return verifySessionToken(cookies[SESSION_COOKIE]);
+}
+
+function serveFile(res: Res, fileName: string, status = 200) {
+  const filePath = path.join(__dirname, "public", fileName);
+  try {
+    const html = fs.readFileSync(filePath, "utf-8");
+    res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(html);
+  } catch {
+    res.writeHead(404);
+    res.end(`Page not found: ${fileName}`);
+  }
+}
+
+async function handleLogin(req: Req, res: Res) {
+  let body: Record<string, unknown>;
+  try {
+    body = (await readBody(req)) as Record<string, unknown>;
+  } catch (e: any) {
+    return json(res, 400, { success: false, error: e.message });
+  }
+
+  if (!checkCredentials(body.email, body.password)) {
+    return json(res, 401, { success: false, error: "Invalid email or password" });
+  }
+
+  const token = createSessionToken();
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    "Set-Cookie": buildSetCookie(token),
+  });
+  res.end(JSON.stringify({ success: true }));
+}
+
+function handleLogout(res: Res) {
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    "Set-Cookie": buildClearCookie(),
+  });
+  res.end(JSON.stringify({ success: true }));
 }
 
 // -- Route handlers ------------------------------------------------------------
@@ -184,8 +270,15 @@ async function handleFullAudit(req: Req, res: Res) {
     const r2 = loadR2ConfigFromEnv();
     if (r2) {
       try {
-        saved = await saveReportToR2(report, r2);
-        console.log(`[audit] Report saved to R2: ${saved.htmlUrl}`);
+        // Render the report to PDF (best-effort) so it can be stored alongside JSON/HTML.
+        let pdf: Buffer | undefined;
+        try {
+          pdf = await renderReportPdf(report);
+        } catch (e: any) {
+          console.error(`[audit] PDF render failed (saving without PDF): ${e.message}`);
+        }
+        saved = await saveReportToR2(report, r2, pdf);
+        console.log(`[audit] Report saved to R2: ${saved.pdfUrl || saved.htmlUrl}`);
       } catch (e: any) {
         console.error(`[audit] R2 save failed (audit still returned): ${e.message}`);
       }
@@ -266,18 +359,32 @@ const server = http.createServer(async (req: Req, res: Res) => {
   }
 
   try {
-    // GET / or /index.html -> serve frontend
-    if (method === "GET" && (url === "/" || url === "/index.html")) {
-      const htmlPath = path.join(__dirname, "public", "index.html");
-      try {
-        const html = fs.readFileSync(htmlPath, "utf-8");
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(html);
-      } catch {
-        res.writeHead(404);
-        res.end("Frontend not found. Make sure public/index.html exists.");
+    // GET /login -> serve login page (redirect to dashboard if already signed in)
+    if (method === "GET" && (url === "/login" || url === "/login.html")) {
+      if (isAuthed(req)) {
+        res.writeHead(302, { Location: "/" });
+        return res.end();
       }
-      return;
+      return serveFile(res, "login.html");
+    }
+
+    // POST /login -> validate credentials, set session cookie
+    if (method === "POST" && url === "/login") {
+      return await handleLogin(req, res);
+    }
+
+    // POST /logout -> clear session cookie
+    if (method === "POST" && url === "/logout") {
+      return handleLogout(res);
+    }
+
+    // GET / or /index.html -> serve dashboard (requires auth)
+    if (method === "GET" && (url === "/" || url === "/index.html")) {
+      if (!isAuthed(req)) {
+        res.writeHead(302, { Location: "/login" });
+        return res.end();
+      }
+      return serveFile(res, "index.html");
     }
 
     // GET /health
@@ -290,14 +397,16 @@ const server = http.createServer(async (req: Req, res: Res) => {
       return await handleModulesList(res);
     }
 
-    // POST /audit  or  POST /audit/full
+    // POST /audit  or  POST /audit/full  (requires auth)
     if (method === "POST" && (url === "/audit" || url === "/audit/full")) {
+      if (!isAuthed(req)) return json(res, 401, { success: false, error: "Not authenticated" });
       return await handleFullAudit(req, res);
     }
 
-    // POST /audit/module/3  (single module by number)
+    // POST /audit/module/3  (single module by number, requires auth)
     const moduleMatch = url.match(/^\/audit\/module\/(\d+)$/);
     if (method === "POST" && moduleMatch) {
+      if (!isAuthed(req)) return json(res, 401, { success: false, error: "Not authenticated" });
       return await handleSingleModule(req, res, parseInt(moduleMatch[1]));
     }
 
