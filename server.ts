@@ -174,6 +174,34 @@ function serveFile(res: Res, fileName: string, status = 200) {
   }
 }
 
+const ASSET_TYPES: Record<string, string> = {
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".webp": "image/webp",
+  ".woff2": "font/woff2",
+};
+
+/** Serve a static asset from /public. `name` is a single path segment (no slashes). */
+function serveAsset(res: Res, name: string) {
+  const ext = path.extname(name).toLowerCase();
+  const type = ASSET_TYPES[ext];
+  if (!type) {
+    res.writeHead(404);
+    return res.end("Not found");
+  }
+  try {
+    const buf = fs.readFileSync(path.join(__dirname, "public", name));
+    res.writeHead(200, { "Content-Type": type, "Cache-Control": "public, max-age=300" });
+    res.end(buf);
+  } catch {
+    res.writeHead(404);
+    res.end("Not found");
+  }
+}
+
 async function handleRegister(req: Req, res: Res) {
   let body: Record<string, unknown>;
   try {
@@ -436,6 +464,12 @@ const server = http.createServer(async (req: Req, res: Res) => {
     }
     if (method === "GET" && (url === "/" || url === "/index.html")) {
       return serveFile(res, "index.html");
+    }
+
+    // Static assets from /public (e.g. /auth.js) — single flat segment only.
+    const assetMatch = method === "GET" && url.match(/^\/([a-zA-Z0-9_.-]+\.[a-z0-9]+)$/);
+    if (assetMatch && !url.endsWith(".html")) {
+      return serveAsset(res, assetMatch[1]);
     }
 
     // Auth API
