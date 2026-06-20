@@ -20,17 +20,13 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { chromium, Browser } from "playwright";
-import { runFullAudit, FullAuditOptions, FullAuditReport } from "./audit-modules";
+import { runFullAudit, FullAuditOptions, FullAuditReport, normalizeAuditType } from "./audit-modules";
 import { loadR2ConfigFromEnv, saveReportToR2, SavedReport, renderReportHtml } from "./lib/r2-storage";
-import {
-  checkCredentials,
-  createSessionToken,
-  verifySessionToken,
-  parseCookies,
-  buildSetCookie,
-  buildClearCookie,
-  SESSION_COOKIE,
-} from "./lib/auth";
+import { register, login, refresh, logout, AuthError } from "./lib/auth";
+import { verifyAccessToken, bearerFromHeader, JwtPayload } from "./lib/jwt";
+import { isDbConfigured, pingDb, closePool } from "./lib/db";
+import { getOrCreateWebsite, touchLastAudited } from "./lib/models/website.model";
+import { createAuditRecord } from "./lib/models/audit.model";
 
 // __dirname is not available in ESM — derive it from import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -151,10 +147,19 @@ function validateUrl(url: unknown): string {
 
 // -- Auth helpers --------------------------------------------------------------
 
-/** True if the request carries a valid session cookie. */
-function isAuthed(req: Req): boolean {
-  const cookies = parseCookies(req.headers.cookie);
-  return verifySessionToken(cookies[SESSION_COOKIE]);
+/** Resolve the current user from a Bearer access token, or null if unauthenticated. */
+function getAuthUser(req: Req): JwtPayload | null {
+  const token = bearerFromHeader(req.headers.authorization);
+  return token ? verifyAccessToken(token) : null;
+}
+
+/** Request metadata stored alongside a session (user-agent / client IP). */
+function reqMeta(req: Req) {
+  const fwd = (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim();
+  return {
+    userAgent: (req.headers["user-agent"] as string | undefined) ?? null,
+    ip: fwd || req.socket.remoteAddress || null,
+  };
 }
 
 function serveFile(res: Res, fileName: string, status = 200) {
@@ -169,6 +174,23 @@ function serveFile(res: Res, fileName: string, status = 200) {
   }
 }
 
+async function handleRegister(req: Req, res: Res) {
+  let body: Record<string, unknown>;
+  try {
+    body = (await readBody(req)) as Record<string, unknown>;
+  } catch (e: any) {
+    return json(res, 400, { success: false, error: e.message });
+  }
+  try {
+    const result = await register(body, reqMeta(req));
+    json(res, 201, { success: true, ...result });
+  } catch (e: any) {
+    const status = e instanceof AuthError ? e.status : 500;
+    if (!(e instanceof AuthError)) console.error("[register] error:", e.message);
+    json(res, status, { success: false, error: e.message });
+  }
+}
+
 async function handleLogin(req: Req, res: Res) {
   let body: Record<string, unknown>;
   try {
@@ -176,25 +198,46 @@ async function handleLogin(req: Req, res: Res) {
   } catch (e: any) {
     return json(res, 400, { success: false, error: e.message });
   }
-
-  if (!checkCredentials(body.email, body.password)) {
-    return json(res, 401, { success: false, error: "Invalid email or password" });
+  try {
+    const result = await login(body, reqMeta(req));
+    json(res, 200, { success: true, ...result });
+  } catch (e: any) {
+    const status = e instanceof AuthError ? e.status : 500;
+    if (!(e instanceof AuthError)) console.error("[login] error:", e.message);
+    json(res, status, { success: false, error: e.message });
   }
-
-  const token = createSessionToken();
-  res.writeHead(200, {
-    "Content-Type": "application/json",
-    "Set-Cookie": buildSetCookie(token),
-  });
-  res.end(JSON.stringify({ success: true }));
 }
 
-function handleLogout(res: Res) {
-  res.writeHead(200, {
-    "Content-Type": "application/json",
-    "Set-Cookie": buildClearCookie(),
-  });
-  res.end(JSON.stringify({ success: true }));
+async function handleRefresh(req: Req, res: Res) {
+  let body: Record<string, unknown>;
+  try {
+    body = (await readBody(req)) as Record<string, unknown>;
+  } catch (e: any) {
+    return json(res, 400, { success: false, error: e.message });
+  }
+  try {
+    const result = await refresh(body.refreshToken, reqMeta(req));
+    json(res, 200, { success: true, ...result });
+  } catch (e: any) {
+    const status = e instanceof AuthError ? e.status : 500;
+    if (!(e instanceof AuthError)) console.error("[refresh] error:", e.message);
+    json(res, status, { success: false, error: e.message });
+  }
+}
+
+async function handleLogout(req: Req, res: Res) {
+  let body: Record<string, unknown> = {};
+  try {
+    body = (await readBody(req)) as Record<string, unknown>;
+  } catch {
+    /* logout is best-effort; ignore body parse errors */
+  }
+  try {
+    await logout(body.refreshToken);
+  } catch (e: any) {
+    console.error("[logout] error:", e.message);
+  }
+  json(res, 200, { success: true });
 }
 
 // -- Route handlers ------------------------------------------------------------
@@ -214,11 +257,13 @@ const MODULE_INFO = [
 
 async function handleHealth(res: Res) {
   const browserOk = !!browser?.isConnected();
+  const dbOk = isDbConfigured() ? await pingDb() : false;
   json(res, 200, {
     status: "ok",
     service: "PageScoreIQ Audit Engine",
     version: "2.0",
     browser: browserOk ? "ready" : "not started",
+    database: isDbConfigured() ? (dbOk ? "connected" : "unreachable") : "not configured",
     modules: 10,
     ts: new Date().toISOString(),
   });
@@ -228,7 +273,7 @@ async function handleModulesList(res: Res) {
   json(res, 200, { modules: MODULE_INFO });
 }
 
-async function handleFullAudit(req: Req, res: Res) {
+async function handleFullAudit(req: Req, res: Res, user: JwtPayload) {
   let body: Record<string, unknown>;
   try {
     body = (await readBody(req)) as Record<string, unknown>;
@@ -245,15 +290,18 @@ async function handleFullAudit(req: Req, res: Res) {
 
   const modulesParam = body.modules;
   const modules = Array.isArray(modulesParam)
-    ? modulesParam.map(Number).filter((n) => n >= 1 && n <= 10)
+    ? modulesParam.map(Number).filter((n) => n >= 1 && n <= 12)
     : undefined;
 
-  console.log(`[audit] Full audit: ${url}${modules ? " modules=" + modules.join(",") : ""}`);
+  const auditType = normalizeAuditType(body.auditType);
+
+  console.log(`[audit] Full audit (${auditType}): ${url}${modules ? " modules=" + modules.join(",") : ""}`);
   const startMs = Date.now();
 
   try {
     const report = await runAudit({
       url,
+      auditType,
       adHeadline: typeof body.adHeadline === "string" ? body.adHeadline : undefined,
       primaryKeyword: typeof body.primaryKeyword === "string" ? body.primaryKeyword : undefined,
       declaredUrl: typeof body.declaredUrl === "string" ? body.declaredUrl : url,
@@ -265,22 +313,41 @@ async function handleFullAudit(req: Req, res: Res) {
     const durationMs = Date.now() - startMs;
     console.log(`[audit] Done in ${(durationMs / 1000).toFixed(1)}s - Score: ${report.overallScore}/100 Grade: ${report.grade}`);
 
-    // Save the report to Cloudflare R2 (best-effort — never fails the audit).
+    // Save the PDF to Cloudflare R2 under report/<username>/<hostname>/<ts>.pdf
+    // (best-effort — never fails the audit).
     let saved: SavedReport | null = null;
     const r2 = loadR2ConfigFromEnv();
     if (r2) {
       try {
-        // Render the report to PDF (best-effort) so it can be stored alongside JSON/HTML.
-        let pdf: Buffer | undefined;
-        try {
-          pdf = await renderReportPdf(report);
-        } catch (e: any) {
-          console.error(`[audit] PDF render failed (saving without PDF): ${e.message}`);
-        }
-        saved = await saveReportToR2(report, r2, pdf);
-        console.log(`[audit] Report saved to R2: ${saved.pdfUrl || saved.htmlUrl}`);
+        const pdf = await renderReportPdf(report);
+        saved = await saveReportToR2(report, r2, user.username, pdf);
+        console.log(`[audit] PDF saved to R2: ${saved.key}`);
       } catch (e: any) {
         console.error(`[audit] R2 save failed (audit still returned): ${e.message}`);
+      }
+    }
+
+    // Record the run in Postgres (best-effort — never fails the audit).
+    if (isDbConfigured()) {
+      try {
+        const hostname = new URL(url).hostname;
+        const website = await getOrCreateWebsite({ userId: user.sub, url, hostname });
+        await createAuditRecord({
+          userId: user.sub,
+          websiteId: website.id,
+          url,
+          auditType: report.auditType,
+          overallScore: report.overallScore,
+          grade: report.grade,
+          verdict: report.verdict,
+          summary: report.summary,
+          report,
+          pdfKey: saved?.key ?? null,
+          pdfUrl: saved?.pdfUrl ?? null,
+        });
+        await touchLastAudited(website.id);
+      } catch (e: any) {
+        console.error(`[audit] DB record failed (audit still returned): ${e.message}`);
       }
     }
 
@@ -292,8 +359,8 @@ async function handleFullAudit(req: Req, res: Res) {
 }
 
 async function handleSingleModule(req: Req, res: Res, moduleNum: number) {
-  if (moduleNum < 1 || moduleNum > 10) {
-    return json(res, 400, { success: false, error: "Module number must be 1-10" });
+  if (moduleNum < 1 || moduleNum > 12) {
+    return json(res, 400, { success: false, error: "Module number must be 1-12" });
   }
 
   let body: Record<string, unknown>;
@@ -359,33 +426,23 @@ const server = http.createServer(async (req: Req, res: Res) => {
   }
 
   try {
-    // GET /login -> serve login page (redirect to dashboard if already signed in)
+    // Static pages — auth is enforced client-side via the JWT, so pages are
+    // served unconditionally; their JS redirects when no valid token is present.
     if (method === "GET" && (url === "/login" || url === "/login.html")) {
-      if (isAuthed(req)) {
-        res.writeHead(302, { Location: "/" });
-        return res.end();
-      }
       return serveFile(res, "login.html");
     }
-
-    // POST /login -> validate credentials, set session cookie
-    if (method === "POST" && url === "/login") {
-      return await handleLogin(req, res);
+    if (method === "GET" && (url === "/register" || url === "/register.html")) {
+      return serveFile(res, "register.html");
     }
-
-    // POST /logout -> clear session cookie
-    if (method === "POST" && url === "/logout") {
-      return handleLogout(res);
-    }
-
-    // GET / or /index.html -> serve dashboard (requires auth)
     if (method === "GET" && (url === "/" || url === "/index.html")) {
-      if (!isAuthed(req)) {
-        res.writeHead(302, { Location: "/login" });
-        return res.end();
-      }
       return serveFile(res, "index.html");
     }
+
+    // Auth API
+    if (method === "POST" && url === "/register") return await handleRegister(req, res);
+    if (method === "POST" && url === "/login") return await handleLogin(req, res);
+    if (method === "POST" && url === "/refresh") return await handleRefresh(req, res);
+    if (method === "POST" && url === "/logout") return await handleLogout(req, res);
 
     // GET /health
     if (method === "GET" && url === "/health") {
@@ -397,16 +454,17 @@ const server = http.createServer(async (req: Req, res: Res) => {
       return await handleModulesList(res);
     }
 
-    // POST /audit  or  POST /audit/full  (requires auth)
+    // POST /audit  or  POST /audit/full  (requires a valid Bearer access token)
     if (method === "POST" && (url === "/audit" || url === "/audit/full")) {
-      if (!isAuthed(req)) return json(res, 401, { success: false, error: "Not authenticated" });
-      return await handleFullAudit(req, res);
+      const user = getAuthUser(req);
+      if (!user) return json(res, 401, { success: false, error: "Not authenticated" });
+      return await handleFullAudit(req, res, user);
     }
 
     // POST /audit/module/3  (single module by number, requires auth)
     const moduleMatch = url.match(/^\/audit\/module\/(\d+)$/);
     if (method === "POST" && moduleMatch) {
-      if (!isAuthed(req)) return json(res, 401, { success: false, error: "Not authenticated" });
+      if (!getAuthUser(req)) return json(res, 401, { success: false, error: "Not authenticated" });
       return await handleSingleModule(req, res, parseInt(moduleMatch[1]));
     }
 
@@ -414,10 +472,14 @@ const server = http.createServer(async (req: Req, res: Res) => {
     json(res, 404, {
       error: "Not found",
       routes: [
+        "POST /register",
+        "POST /login",
+        "POST /refresh",
+        "POST /logout",
         "GET  /health",
         "GET  /audit/modules",
-        "POST /audit",
-        "POST /audit/module/:n   (n = 1-10)",
+        "POST /audit                (Bearer token)",
+        "POST /audit/module/:n      (n = 1-10, Bearer token)",
       ],
     });
   } catch (e: any) {
@@ -452,6 +514,7 @@ async function start() {
 process.on("SIGINT", async () => {
   console.log("\n  Shutting down...");
   if (browser) await browser.close();
+  await closePool().catch(() => {});
   server.close(() => process.exit(0));
 });
 

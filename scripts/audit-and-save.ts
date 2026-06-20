@@ -16,7 +16,7 @@
 
 import { chromium } from "playwright";
 import { runFullAudit, FullAuditOptions } from "../audit-modules";
-import { loadR2ConfigFromEnv, saveReportToR2 } from "../lib/r2-storage";
+import { loadR2ConfigFromEnv, saveReportToR2, renderReportHtml } from "../lib/r2-storage";
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -42,6 +42,7 @@ function parseArgs() {
 
   return {
     url,
+    username: get("--username") || "cli",
     adHeadline: get("--headline"),
     primaryKeyword: get("--keyword"),
     declaredUrl: get("--declared-url"),
@@ -103,12 +104,25 @@ async function main() {
     );
 
     if (r2) {
-      console.log("\n☁️   Uploading report to Cloudflare R2…");
-      const saved = await saveReportToR2(report, r2);
+      console.log("\n☁️   Rendering PDF + uploading to Cloudflare R2…");
+      const reportPage = await context.newPage();
+      let pdf: Buffer;
+      try {
+        await reportPage.setContent(renderReportHtml(report), { waitUntil: "load" });
+        pdf = Buffer.from(
+          await reportPage.pdf({
+            format: "A4",
+            printBackground: true,
+            margin: { top: "16px", bottom: "16px", left: "16px", right: "16px" },
+          })
+        );
+      } finally {
+        await reportPage.close();
+      }
+      const saved = await saveReportToR2(report, r2, args.username, pdf);
       console.log(`    Saved as: ${saved.key}`);
-      console.log(`    ${saved.public ? "Public links:" : "Shareable links (valid 7 days):"}`);
-      console.log(`      HTML : ${saved.htmlUrl}`);
-      console.log(`      JSON : ${saved.jsonUrl}`);
+      console.log(`    ${saved.public ? "Public link:" : "Shareable link (valid 7 days):"}`);
+      console.log(`      PDF : ${saved.pdfUrl}`);
     }
 
     console.log();

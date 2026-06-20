@@ -19,8 +19,14 @@
 import { Page } from "playwright";
 
 // Shared types
-export type { AuditStatus, AuditItem, ModuleResult } from "./types";
-export { MODULE_WEIGHTS } from "./types";
+export type { AuditStatus, AuditItem, ModuleResult, AuditType } from "./types";
+export {
+  MODULE_WEIGHTS,
+  AUDIT_TYPE_MODULES,
+  AUDIT_TYPE_WEIGHTS,
+  DEFAULT_AUDIT_TYPE,
+  normalizeAuditType,
+} from "./types";
 
 // Individual module runners
 export { auditSecurityMalware } from "./m1-security-malware.audit";
@@ -33,6 +39,8 @@ export { auditMobileDesign } from "./m7-mobile-design.audit";
 export { auditLegalPrivacy } from "./m8-legal-privacy.audit";
 export { auditConversionUx } from "./m9-conversion-ux.audit";
 export { auditHtmlForm } from "./m10-html-form.audit";
+export { auditTechnicalSeo } from "./m11-technical-seo.audit";
+export { auditDomainServer } from "./m12-domain-server.audit";
 
 // Legacy exports (backward compatibility)
 export { auditLeadForm } from "./form-validation.audit";
@@ -42,11 +50,14 @@ export type { FormAuditResult } from "./form-validation.audit";
 export type { UtmAuditResult } from "./utm-capturing.audit";
 export type { HtmlStructureAuditResult, HtmlStructureAuditOptions } from "./html-structure.audit";
 
-import type { ModuleResult } from "./types";
+import type { ModuleResult, AuditType } from "./types";
+import { AUDIT_TYPE_MODULES, AUDIT_TYPE_WEIGHTS, normalizeAuditType } from "./types";
 
 // Full audit options
 export interface FullAuditOptions {
   url: string;
+  /** "lp" (Landing Page) or "website" — selects module set + weights. Default "lp". */
+  auditType?: AuditType;
   adHeadline?: string;
   primaryKeyword?: string;
   declaredUrl?: string;
@@ -59,6 +70,7 @@ export type GradeLabel = "A+" | "A" | "B" | "C" | "D" | "F";
 
 export interface FullAuditReport {
   url: string;
+  auditType: AuditType;
   ranAt: string;
   overallScore: number;
   grade: GradeLabel;
@@ -91,8 +103,13 @@ export async function runFullAudit(
   const { auditLegalPrivacy } = await import("./m8-legal-privacy.audit");
   const { auditConversionUx } = await import("./m9-conversion-ux.audit");
   const { auditHtmlForm } = await import("./m10-html-form.audit");
+  const { auditTechnicalSeo } = await import("./m11-technical-seo.audit");
+  const { auditDomainServer } = await import("./m12-domain-server.audit");
 
-  const enabled = new Set(options.modules ?? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  // Default the module set from the audit type; an explicit `modules` list wins.
+  const auditType = normalizeAuditType(options.auditType);
+  const weights = AUDIT_TYPE_WEIGHTS[auditType];
+  const enabled = new Set(options.modules ?? AUDIT_TYPE_MODULES[auditType]);
   const results: ModuleResult[] = [];
 
   if (enabled.has(1)) results.push(await auditSecurityMalware(page, { safeBrowsingApiKey: options.safeBrowsingApiKey }));
@@ -105,8 +122,15 @@ export async function runFullAudit(
   if (enabled.has(8)) results.push(await auditLegalPrivacy(page));
   if (enabled.has(9)) results.push(await auditConversionUx(page));
   if (enabled.has(10)) results.push(await auditHtmlForm(page));
+  if (enabled.has(11)) results.push(await auditTechnicalSeo(page));
+  if (enabled.has(12)) results.push(await auditDomainServer(page));
 
-  const totalWeight = results.reduce((sum, m) => sum + m.weight, 0);
+  // Apply purpose-specific weights (PRD §5) so the composite reflects the audit type.
+  for (const m of results) {
+    if (weights[m.moduleNumber] != null) m.weight = weights[m.moduleNumber];
+  }
+
+  const totalWeight = results.reduce((sum, m) => sum + m.weight, 0) || 1;
   const overallScore = Math.round(results.reduce((sum, m) => sum + m.score * (m.weight / totalWeight), 0));
   const allItems = results.flatMap((m) => m.items);
   const summary = {
@@ -117,7 +141,7 @@ export async function runFullAudit(
   };
   const { grade, verdict } = toGrade(overallScore);
 
-  return { url: options.url, ranAt: new Date().toISOString(), overallScore, grade, verdict, modules: results, summary };
+  return { url: options.url, auditType, ranAt: new Date().toISOString(), overallScore, grade, verdict, modules: results, summary };
 }
 
 // Legacy 3-module runner (backward compatibility)

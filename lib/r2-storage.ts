@@ -31,10 +31,8 @@ export interface R2Config {
 }
 
 export interface SavedReport {
-  key: string; // object key of the JSON report
-  jsonUrl: string; // link to the JSON report
-  htmlUrl: string; // link to the human-readable HTML report
-  pdfUrl?: string; // link to the PDF report (only if a PDF was provided)
+  key: string; // object key of the PDF report
+  pdfUrl: string; // shareable link to the PDF report
   public: boolean; // true = permanent public link, false = presigned (expiring)
 }
 
@@ -215,49 +213,46 @@ function linkFor(cfg: R2Config, key: string): { url: string; isPublic: boolean }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-/** Build a stable, sortable object key base from the report. */
-function buildKeyBase(report: FullAuditReport): string {
-  let hostname = "unknown";
-  try {
-    hostname = new URL(report.url).hostname.replace(/[^a-z0-9.-]/gi, "_");
-  } catch {
-    /* keep default */
-  }
-  const ts = report.ranAt.replace(/[:.]/g, "-"); // 2026-06-15T10-20-30-000Z
-  const grade = report.grade.replace("+", "plus");
-  return `reports/${hostname}/${ts}__${grade}__${report.overallScore}`;
+/** Make a path segment filesystem/URL-safe. */
+function slug(value: string, fallback: string): string {
+  const cleaned = value.replace(/[^a-z0-9.-]/gi, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
+  return cleaned || fallback;
 }
 
 /**
- * Upload a full audit report to R2 as both JSON and HTML.
- * Returns the object key and shareable URLs.
+ * Build the PDF object key:
+ *   report/<username>/<hostname>/<lp|website>/<timestamp>__<grade>__<score>.pdf
+ */
+function buildPdfKey(report: FullAuditReport, username: string): string {
+  let hostname = "unknown";
+  try {
+    hostname = new URL(report.url).hostname;
+  } catch {
+    /* keep default */
+  }
+  const user = slug(username, "anonymous");
+  const host = slug(hostname, "unknown");
+  const type = report.auditType === "website" ? "website" : "lp";
+  const ts = report.ranAt.replace(/[:.]/g, "-"); // 2026-06-15T10-20-30-000Z
+  const grade = report.grade.replace("+", "plus");
+  return `report/${user}/${host}/${type}/${ts}__${grade}__${report.overallScore}.pdf`;
+}
+
+/**
+ * Upload an audit report to R2 as a PDF only, under
+ * report/<username>/<hostname>/<lp|website>/<timestamp>.pdf. Returns key + link.
  */
 export async function saveReportToR2(
   report: FullAuditReport,
   cfg: R2Config,
-  pdfBuffer?: Buffer
+  username: string,
+  pdfBuffer: Buffer
 ): Promise<SavedReport> {
-  const base = buildKeyBase(report);
-  const jsonKey = `${base}.json`;
-  const htmlKey = `${base}.html`;
-  const pdfKey = `${base}.pdf`;
+  const pdfKey = buildPdfKey(report, username);
+  await putObject(cfg, pdfKey, pdfBuffer, "application/pdf");
 
-  await putObject(cfg, jsonKey, JSON.stringify(report, null, 2), "application/json; charset=utf-8");
-  await putObject(cfg, htmlKey, renderReportHtml(report), "text/html; charset=utf-8");
-  if (pdfBuffer) {
-    await putObject(cfg, pdfKey, pdfBuffer, "application/pdf");
-  }
-
-  const jsonLink = linkFor(cfg, jsonKey);
-  const htmlLink = linkFor(cfg, htmlKey);
-
-  return {
-    key: jsonKey,
-    jsonUrl: jsonLink.url,
-    htmlUrl: htmlLink.url,
-    pdfUrl: pdfBuffer ? linkFor(cfg, pdfKey).url : undefined,
-    public: jsonLink.isPublic,
-  };
+  const link = linkFor(cfg, pdfKey);
+  return { key: pdfKey, pdfUrl: link.url, public: link.isPublic };
 }
 
 // ─── Minimal self-contained HTML report ───────────────────────────────────────
@@ -332,9 +327,9 @@ export function renderReportHtml(report: FullAuditReport): string {
 </style></head>
 <body><div class="wrap">
   <header>
-    <h1>PageScoreIQ — Landing Page Audit</h1>
+    <h1>PageScoreIQ — ${report.auditType === "website" ? "Website Audit" : "Landing Page Audit"}</h1>
     <div class="url">${esc(report.url)}</div>
-    <div class="meta">Audited ${esc(report.ranAt)} · ${report.modules.length}/10 modules ·
+    <div class="meta">Audited ${esc(report.ranAt)} · ${report.modules.length} modules ·
       ${report.summary.pass} passed, ${report.summary.warn} warnings, ${report.summary.fail} failed</div>
   </header>
   <div class="hero">

@@ -1,95 +1,203 @@
 /**
- * PageScoreIQ — minimal hardcoded-admin authentication.
+ * PageScoreIQ — authentication service (DB-backed, JWT).
  *
- * A single admin account guards the dashboard and the audit API. Credentials
- * default to the hardcoded values below but can be overridden with environment
- * variables (recommended for production):
+ * Replaces the old single hardcoded-admin/cookie scheme. Now:
+ *   • Users live in Postgres (users table); passwords hashed with scrypt.
+ *   • Login/register return a short-lived ACCESS token (JWT, see lib/jwt.ts)
+ *     plus a long-lived opaque REFRESH token tracked in user_sessions.
+ *   • Clients send `Authorization: Bearer <access>` on every protected request.
  *
- *   ADMIN_EMAIL      default "admin@pagescore.com"
- *   ADMIN_PASSWORD   default "admin"
- *   AUTH_SECRET      HMAC secret used to sign session cookies (set a long random
- *                    string in Railway → Variables; a dev fallback is used if unset)
- *
- * Sessions are stateless: the cookie carries "<email>|<expiry>" plus an HMAC
- * signature, so no server-side store is needed. Tampering invalidates the HMAC.
+ * Environment:
+ *   JWT_ACCESS_SECRET    signs access tokens (falls back to AUTH_SECRET)
+ *   JWT_ACCESS_TTL_MIN   access lifetime in minutes (default 15)
+ *   REFRESH_TTL_DAYS     refresh lifetime in days   (default 30)
  */
 
 import crypto from "crypto";
+import { promisify } from "util";
+import {
+  User,
+  PublicUser,
+  toPublicUser,
+  createUser,
+  findUserByEmail,
+  findUserById,
+  findUserByUsername,
+} from "./models/user.model";
+import {
+  createSession,
+  findLiveSessionByHash,
+  revokeSessionByHash,
+} from "./models/session.model";
+import { signAccessToken, ACCESS_TTL_SEC } from "./jwt";
 
-export const SESSION_COOKIE = "psiq_session";
+const scrypt = promisify(crypto.scrypt) as (
+  password: string,
+  salt: string,
+  keylen: number
+) => Promise<Buffer>;
 
-const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || "admin@pagescore.com").trim().toLowerCase();
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin";
-const SECRET = process.env.AUTH_SECRET || "pagescoreiq-dev-secret-change-me";
-const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
+const REFRESH_TTL_DAYS = parseInt(process.env.REFRESH_TTL_DAYS || "30", 10) || 30;
+const REFRESH_TTL_MS = REFRESH_TTL_DAYS * 24 * 60 * 60 * 1000;
 
-/** Constant-time check of the submitted email + password. */
-export function checkCredentials(email: unknown, password: unknown): boolean {
-  if (typeof email !== "string" || typeof password !== "string") return false;
-  const emailOk = safeEqual(email.trim().toLowerCase(), ADMIN_EMAIL);
-  const passOk = safeEqual(password, ADMIN_PASSWORD);
-  return emailOk && passOk;
+/** Thrown for any expected auth failure; carries an HTTP status. */
+export class AuthError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+    this.name = "AuthError";
+  }
 }
 
-/** Build a signed, expiring session token for the admin. */
-export function createSessionToken(): string {
-  const exp = Date.now() + SESSION_TTL_MS;
-  const payload = `${ADMIN_EMAIL}|${exp}`;
-  const sig = sign(payload);
-  return Buffer.from(payload).toString("base64url") + "." + sig;
+export interface AuthTokens {
+  accessToken: string;
+  refreshToken: string;
+  expiresIn: number; // access-token lifetime, seconds
 }
 
-/** Verify a session token: valid signature and not expired. */
-export function verifySessionToken(token: unknown): boolean {
-  if (typeof token !== "string" || !token.includes(".")) return false;
-  const [b64, sig] = token.split(".");
-  let payload: string;
+export interface AuthResult extends AuthTokens {
+  user: PublicUser;
+}
+
+// ─── password hashing (scrypt) ────────────────────────────────────────────────
+
+/** Hash a password → "scrypt$<saltHex>$<hashHex>". */
+async function hashPassword(password: string): Promise<string> {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const derived = await scrypt(password, salt, 64);
+  return `scrypt$${salt}$${derived.toString("hex")}`;
+}
+
+/** Constant-time verify of a password against a stored "scrypt$salt$hash". */
+async function verifyPassword(password: string, stored: string): Promise<boolean> {
+  const [scheme, salt, hashHex] = stored.split("$");
+  if (scheme !== "scrypt" || !salt || !hashHex) return false;
+  const derived = await scrypt(password, salt, 64);
+  const expected = Buffer.from(hashHex, "hex");
+  return derived.length === expected.length && crypto.timingSafeEqual(derived, expected);
+}
+
+// ─── refresh tokens (opaque random, hash stored) ──────────────────────────────
+
+function newRefreshToken(): { token: string; hash: string } {
+  const token = crypto.randomBytes(48).toString("base64url");
+  const hash = crypto.createHash("sha256").update(token).digest("hex");
+  return { token, hash };
+}
+
+function hashRefreshToken(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+async function issueTokens(
+  user: User,
+  meta?: { userAgent?: string | null; ip?: string | null }
+): Promise<AuthTokens> {
+  const accessToken = signAccessToken(user);
+  const { token: refreshToken, hash } = newRefreshToken();
+  await createSession({
+    userId: user.id,
+    refreshTokenHash: hash,
+    expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+    userAgent: meta?.userAgent,
+    ip: meta?.ip,
+  });
+  return { accessToken, refreshToken, expiresIn: ACCESS_TTL_SEC };
+}
+
+// ─── validation ───────────────────────────────────────────────────────────────
+
+const USERNAME_RE = /^[a-zA-Z0-9_.-]{3,30}$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// ─── public API ───────────────────────────────────────────────────────────────
+
+/** Self-service registration. Returns the new user plus tokens (auto-login). */
+export async function register(
+  input: { username?: unknown; email?: unknown; password?: unknown },
+  meta?: { userAgent?: string | null; ip?: string | null }
+): Promise<AuthResult> {
+  const username = typeof input.username === "string" ? input.username.trim() : "";
+  const email = typeof input.email === "string" ? input.email.trim().toLowerCase() : "";
+  const password = typeof input.password === "string" ? input.password : "";
+
+  if (!USERNAME_RE.test(username)) {
+    throw new AuthError(400, "Username must be 3–30 chars (letters, numbers, . _ -).");
+  }
+  if (!EMAIL_RE.test(email)) throw new AuthError(400, "A valid email is required.");
+  if (password.length < 8) throw new AuthError(400, "Password must be at least 8 characters.");
+
+  if (await findUserByEmail(email)) throw new AuthError(409, "That email is already registered.");
+  if (await findUserByUsername(username)) throw new AuthError(409, "That username is taken.");
+
+  const passwordHash = await hashPassword(password);
+  let user: User;
   try {
-    payload = Buffer.from(b64, "base64url").toString("utf8");
-  } catch {
-    return false;
+    user = await createUser({ username, email, passwordHash });
+  } catch (e: any) {
+    // Unique-violation race (two requests at once)
+    if (e?.code === "23505") throw new AuthError(409, "That username or email is already taken.");
+    throw e;
   }
-  if (!safeEqual(sign(payload), sig)) return false;
 
-  const [, expStr] = payload.split("|");
-  const exp = parseInt(expStr, 10);
-  return Number.isFinite(exp) && Date.now() < exp;
+  const tokens = await issueTokens(user, meta);
+  return { user: toPublicUser(user), ...tokens };
 }
 
-/** Parse a raw Cookie header into a name→value map. */
-export function parseCookies(header: string | undefined): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (!header) return out;
-  for (const part of header.split(";")) {
-    const idx = part.indexOf("=");
-    if (idx === -1) continue;
-    const k = part.slice(0, idx).trim();
-    const v = part.slice(idx + 1).trim();
-    if (k) out[k] = decodeURIComponent(v);
+/** Email + password login. */
+export async function login(
+  input: { email?: unknown; password?: unknown },
+  meta?: { userAgent?: string | null; ip?: string | null }
+): Promise<AuthResult> {
+  const email = typeof input.email === "string" ? input.email.trim().toLowerCase() : "";
+  const password = typeof input.password === "string" ? input.password : "";
+  if (!email || !password) throw new AuthError(400, "Email and password are required.");
+
+  const user = await findUserByEmail(email);
+  // Verify even when the user is missing to keep timing roughly constant.
+  const ok = user
+    ? await verifyPassword(password, user.password_hash)
+    : await verifyPassword(password, "scrypt$0$0").then(() => false);
+
+  if (!user || !ok) throw new AuthError(401, "Invalid email or password.");
+  if (!user.is_active) throw new AuthError(403, "This account is disabled.");
+
+  const tokens = await issueTokens(user, meta);
+  return { user: toPublicUser(user), ...tokens };
+}
+
+/**
+ * Exchange a valid refresh token for a new token pair (rotation): the old
+ * refresh token is revoked and a fresh one is issued.
+ */
+export async function refresh(
+  refreshToken: unknown,
+  meta?: { userAgent?: string | null; ip?: string | null }
+): Promise<AuthResult> {
+  if (typeof refreshToken !== "string" || !refreshToken) {
+    throw new AuthError(401, "Missing refresh token.");
   }
-  return out;
+  const hash = hashRefreshToken(refreshToken);
+  const session = await findLiveSessionByHash(hash);
+  if (!session) throw new AuthError(401, "Session expired — please sign in again.");
+
+  const user = await findUserById(session.user_id);
+  if (!user || !user.is_active) throw new AuthError(401, "Account unavailable.");
+
+  // Rotate: kill the presented token, mint a new pair.
+  await revokeSessionByHash(hash);
+  const tokens = await issueTokens(user, meta);
+  return { user: toPublicUser(user), ...tokens };
 }
 
-/** Cookie string that sets the session (HttpOnly, SameSite=Lax). */
-export function buildSetCookie(token: string): string {
-  const maxAge = Math.floor(SESSION_TTL_MS / 1000);
-  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAge}`;
+/** Log out: revoke the given refresh token's session. */
+export async function logout(refreshToken: unknown): Promise<void> {
+  if (typeof refreshToken === "string" && refreshToken) {
+    await revokeSessionByHash(hashRefreshToken(refreshToken));
+  }
 }
 
-/** Cookie string that clears the session. */
-export function buildClearCookie(): string {
-  return `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`;
-}
-
-// ─── internals ────────────────────────────────────────────────────────────────
-
-function sign(payload: string): string {
-  return crypto.createHmac("sha256", SECRET).update(payload).digest("hex");
-}
-
-function safeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ab.length !== bb.length) return false;
-  return crypto.timingSafeEqual(ab, bb);
+/** Look up the current user from an access-token payload's subject. */
+export async function getUserById(id: string): Promise<PublicUser | null> {
+  const u = await findUserById(id);
+  return u ? toPublicUser(u) : null;
 }

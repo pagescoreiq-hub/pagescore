@@ -229,10 +229,18 @@
   <div class="card" id="form-card">
     <div class="card-title">🔍 Run Audit</div>
     <div class="form-url">
-      <label>Landing Page URL *</label>
+      <label>Audit Type *</label>
+      <select id="inp-audit-type" onchange="onAuditTypeChange()"
+        style="width:100%;padding:12px 14px;border:1.5px solid #e2e8f0;border-radius:9px;font-size:14px;color:#2d3748;background:#fff;">
+        <option value="lp">Landing Page Audit — ad-campaign compliance (9 modules)</option>
+        <option value="website">Website Audit — overall site health (8 modules)</option>
+      </select>
+    </div>
+    <div class="form-url" style="margin-top:14px;">
+      <label id="lbl-url">Landing Page URL *</label>
       <input type="url" id="inp-url" placeholder="https://yourlandingpage.com" autocomplete="off" />
     </div>
-    <div class="form-row">
+    <div class="form-row" id="lp-fields">
       <div class="form-group">
         <label>Ad Headline <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional)</span></label>
         <input type="text" id="inp-headline" placeholder="e.g. Luxury Flats in Hyderabad" />
@@ -243,7 +251,7 @@
       </div>
     </div>
     <div class="error-box" id="err-box"></div>
-    <button class="btn-run" id="run-btn" onclick="startAudit()">Run Full 10-Module Audit</button>
+    <button class="btn-run" id="run-btn" onclick="startAudit()">Run Landing Page Audit</button>
   </div>
 
   <!-- LOADING -->
@@ -308,7 +316,11 @@
 
 </div>
 
+<script src="/auth.js"></script>
 <script>
+  // Require a valid session; bounce to /login if there is no token.
+  PSIQAuth.requireAuth();
+
   const MODULES = [
     { n:1,  name:'Security & Malware',           weight:15, impact:'CRITICAL' },
     { n:2,  name:'URL & Redirect Compliance',    weight:12, impact:'CRITICAL' },
@@ -364,15 +376,26 @@
     });
   }
 
+  /* ── Audit-type toggle ── */
+  function onAuditTypeChange() {
+    const type = document.getElementById('inp-audit-type').value;
+    const isLp = type !== 'website';
+    document.getElementById('lp-fields').style.display = isLp ? '' : 'none';
+    document.getElementById('lbl-url').textContent = isLp ? 'Landing Page URL *' : 'Website URL *';
+    document.getElementById('run-btn').textContent = isLp ? 'Run Landing Page Audit' : 'Run Website Audit';
+    document.getElementById('inp-url').placeholder = isLp ? 'https://yourlandingpage.com' : 'https://yourwebsite.com';
+  }
+
   /* ── Run audit ── */
   async function startAudit() {
+    const auditType = document.getElementById('inp-audit-type').value;
     const url      = document.getElementById('inp-url').value.trim();
     const headline = document.getElementById('inp-headline').value.trim();
     const keyword  = document.getElementById('inp-keyword').value.trim();
     const errEl    = document.getElementById('err-box');
     errEl.className = 'error-box';
 
-    if (!url) { errEl.textContent = 'Please enter a landing page URL.'; errEl.className = 'error-box show'; return; }
+    if (!url) { errEl.textContent = 'Please enter a URL to audit.'; errEl.className = 'error-box show'; return; }
     if (!url.startsWith('http')) { errEl.textContent = 'URL must begin with https://'; errEl.className = 'error-box show'; return; }
 
     document.getElementById('form-card').style.display = 'none';
@@ -383,19 +406,20 @@
     startProgress(url);
 
     try {
-      const body = { url };
-      if (headline) body.adHeadline = headline;
-      if (keyword)  body.primaryKeyword = keyword;
+      const body = { url, auditType };
+      if (auditType === 'lp' && headline) body.adHeadline = headline;
+      if (auditType === 'lp' && keyword)  body.primaryKeyword = keyword;
 
-      const resp = await fetch('/audit', {
+      const resp = await PSIQAuth.authFetch('/audit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
+
+      if (resp.status === 401) { stopProgress(); PSIQAuth.clearAuth(); window.location.href = '/login'; return; }
       const json = await resp.json();
       stopProgress();
 
-      if (resp.status === 401) { window.location.href = '/login'; return; }
       if (!resp.ok || !json.success) throw new Error(json.error || 'Audit failed');
       renderResults(json.data, json.durationMs, json.report);
 
@@ -550,9 +574,8 @@
     window.scrollTo({ top: 0 });
   }
 
-  async function doLogout() {
-    try { await fetch('/logout', { method: 'POST' }); } catch (e) {}
-    window.location.href = '/login';
+  function doLogout() {
+    PSIQAuth.logout();
   }
 
   document.getElementById('inp-url').addEventListener('keydown', e => { if(e.key==='Enter') startAudit(); });
