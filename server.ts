@@ -25,8 +25,23 @@ import { loadR2ConfigFromEnv, saveReportToR2, SavedReport, renderReportHtml } fr
 import { register, login, refresh, logout, AuthError } from "./lib/auth";
 import { verifyAccessToken, bearerFromHeader, JwtPayload } from "./lib/jwt";
 import { isDbConfigured, pingDb, closePool } from "./lib/db";
-import { getOrCreateWebsite, touchLastAudited } from "./lib/models/website.model";
+import { touchLastAudited, listWebsitesForUser, getReauditUsage } from "./lib/models/website.model";
 import { createAuditRecord } from "./lib/models/audit.model";
+import {
+  getActiveSubscription,
+  getUsageSummary,
+  listPlans,
+  changePlan,
+  resolveAuditModules,
+  checkAuditAllowance,
+  consumeAuditAllowance,
+  createProjectForUser,
+  deleteProjectForUser,
+  hasFeature,
+  SubscriptionError,
+  type ActiveSubscription,
+  type AuditAllowance,
+} from "./lib/subscription";
 
 // __dirname is not available in ESM — derive it from import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -113,8 +128,8 @@ function json(res: Res, status: number, body: unknown) {
   res.writeHead(status, {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
   });
   res.end(payload);
 }
@@ -317,11 +332,32 @@ async function handleFullAudit(req: Req, res: Res, user: JwtPayload) {
   }
 
   const modulesParam = body.modules;
-  const modules = Array.isArray(modulesParam)
+  const requestedModules = Array.isArray(modulesParam)
     ? modulesParam.map(Number).filter((n) => n >= 1 && n <= 12)
     : undefined;
 
   const auditType = normalizeAuditType(body.auditType);
+  const hostname = new URL(url).hostname;
+
+  // ── plan enforcement ────────────────────────────────────────────────────────
+  // Quota + module gating require the DB. With no DATABASE_URL (local dev), the
+  // audit runs unrestricted exactly as before.
+  let active: ActiveSubscription | null = null;
+  let allowance: AuditAllowance | null = null;
+  let modules = requestedModules;
+
+  if (isDbConfigured()) {
+    try {
+      active = await getActiveSubscription(user.sub);
+      modules = resolveAuditModules(active.plan, auditType, requestedModules);
+      allowance = await checkAuditAllowance(active, user.sub, hostname);
+    } catch (e: any) {
+      if (e instanceof SubscriptionError) {
+        return json(res, e.status, { success: false, error: e.message, code: e.code });
+      }
+      console.error(`[audit] enforcement check failed (allowing run): ${e.message}`);
+    }
+  }
 
   console.log(`[audit] Full audit (${auditType}): ${url}${modules ? " modules=" + modules.join(",") : ""}`);
   const startMs = Date.now();
@@ -342,10 +378,11 @@ async function handleFullAudit(req: Req, res: Res, user: JwtPayload) {
     console.log(`[audit] Done in ${(durationMs / 1000).toFixed(1)}s - Score: ${report.overallScore}/100 Grade: ${report.grade}`);
 
     // Save the PDF to Cloudflare R2 under report/<username>/<hostname>/<ts>.pdf
-    // (best-effort — never fails the audit).
+    // (best-effort — never fails the audit). Gated by the plan's pdf_export flag.
     let saved: SavedReport | null = null;
+    const pdfAllowed = !active || hasFeature(active.plan, "pdf_export");
     const r2 = loadR2ConfigFromEnv();
-    if (r2) {
+    if (pdfAllowed && r2) {
       try {
         const pdf = await renderReportPdf(report);
         saved = await saveReportToR2(report, r2, user.username, pdf);
@@ -355,14 +392,15 @@ async function handleFullAudit(req: Req, res: Res, user: JwtPayload) {
       }
     }
 
-    // Record the run in Postgres (best-effort — never fails the audit).
+    // Record the run in Postgres + consume the allowance (best-effort — never
+    // fails the audit). Re-audits link to the saved project; one-off audits of an
+    // unsaved URL are recorded with a null website_id.
     if (isDbConfigured()) {
       try {
-        const hostname = new URL(url).hostname;
-        const website = await getOrCreateWebsite({ userId: user.sub, url, hostname });
+        const websiteId = allowance?.project?.id ?? null;
         await createAuditRecord({
           userId: user.sub,
-          websiteId: website.id,
+          websiteId,
           url,
           auditType: report.auditType,
           overallScore: report.overallScore,
@@ -373,7 +411,8 @@ async function handleFullAudit(req: Req, res: Res, user: JwtPayload) {
           pdfKey: saved?.key ?? null,
           pdfUrl: saved?.pdfUrl ?? null,
         });
-        await touchLastAudited(website.id);
+        if (websiteId) await touchLastAudited(websiteId);
+        if (active && allowance) await consumeAuditAllowance(active, user.sub, allowance);
       } catch (e: any) {
         console.error(`[audit] DB record failed (audit still returned): ${e.message}`);
       }
@@ -383,6 +422,131 @@ async function handleFullAudit(req: Req, res: Res, user: JwtPayload) {
   } catch (e: any) {
     console.error(`[audit] Failed: ${e.message}`);
     json(res, 500, { success: false, error: e.message });
+  }
+}
+
+// -- Subscription / plan / project handlers ------------------------------------
+
+/** Map a thrown error to a JSON response (SubscriptionError carries its status). */
+function handleSubError(res: Res, e: any, context: string) {
+  if (e instanceof SubscriptionError) {
+    return json(res, e.status, { success: false, error: e.message, code: e.code });
+  }
+  console.error(`[${context}] error:`, e.message);
+  return json(res, 500, { success: false, error: "Internal server error" });
+}
+
+/** GET /plans — public tier catalog (for a pricing page). */
+async function handlePlansList(res: Res) {
+  try {
+    const plans = await listPlans();
+    json(res, 200, { success: true, plans });
+  } catch (e: any) {
+    handleSubError(res, e, "plans");
+  }
+}
+
+/** GET /subscription — the caller's current plan + usage. */
+async function handleGetSubscription(res: Res, user: JwtPayload) {
+  try {
+    const summary = await getUsageSummary(user.sub);
+    json(res, 200, { success: true, ...summary });
+  } catch (e: any) {
+    handleSubError(res, e, "subscription");
+  }
+}
+
+/**
+ * POST /subscription/change { planId } — switch the caller's plan.
+ *
+ * NOTE: there is no payment gate yet — when billing (e.g. Stripe) is added, an
+ * upgrade must be gated on a successful charge/checkout before reaching here.
+ */
+async function handleChangePlan(req: Req, res: Res, user: JwtPayload) {
+  let body: Record<string, unknown>;
+  try {
+    body = (await readBody(req)) as Record<string, unknown>;
+  } catch (e: any) {
+    return json(res, 400, { success: false, error: e.message });
+  }
+  const planId = typeof body.planId === "string" ? body.planId : (body.plan as string);
+  if (!planId) return json(res, 400, { success: false, error: "planId is required" });
+  try {
+    const { subscription, plan } = await changePlan(user.sub, planId);
+    json(res, 200, {
+      success: true,
+      plan: { id: plan.id, name: plan.name },
+      status: subscription.status,
+    });
+  } catch (e: any) {
+    handleSubError(res, e, "subscription/change");
+  }
+}
+
+/** GET /projects — the caller's saved projects + per-project re-audit usage. */
+async function handleListProjects(res: Res, user: JwtPayload) {
+  try {
+    const { subscription, plan } = await getActiveSubscription(user.sub);
+    const projects = await listWebsitesForUser(user.sub);
+    const periodStart = subscription.current_period_start;
+    const reLimit = plan.monthly_reaudits_per_project;
+    const data = await Promise.all(
+      projects.map(async (p) => {
+        const used = await getReauditUsage(p.id, periodStart);
+        return {
+          id: p.id,
+          url: p.url,
+          hostname: p.hostname,
+          last_audited_at: p.last_audited_at,
+          created_at: p.created_at,
+          reaudits: {
+            used,
+            limit: reLimit,
+            remaining: reLimit === null ? null : Math.max(0, reLimit - used),
+          },
+        };
+      })
+    );
+    json(res, 200, {
+      success: true,
+      projects: data,
+      slots: { used: projects.length, limit: plan.max_projects },
+    });
+  } catch (e: any) {
+    handleSubError(res, e, "projects");
+  }
+}
+
+/** POST /projects { url } — save a URL as a persistent project (slot-gated). */
+async function handleCreateProject(req: Req, res: Res, user: JwtPayload) {
+  let body: Record<string, unknown>;
+  try {
+    body = (await readBody(req)) as Record<string, unknown>;
+  } catch (e: any) {
+    return json(res, 400, { success: false, error: e.message });
+  }
+  let url: string;
+  try {
+    url = validateUrl(body.url);
+  } catch (e: any) {
+    return json(res, 400, { success: false, error: e.message });
+  }
+  try {
+    const hostname = new URL(url).hostname;
+    const project = await createProjectForUser(user.sub, { url, hostname });
+    json(res, 201, { success: true, project });
+  } catch (e: any) {
+    handleSubError(res, e, "projects/create");
+  }
+}
+
+/** DELETE /projects/:id — delete a project (frees a slot). */
+async function handleDeleteProject(res: Res, user: JwtPayload, id: string) {
+  try {
+    await deleteProjectForUser(user.sub, id);
+    json(res, 200, { success: true });
+  } catch (e: any) {
+    handleSubError(res, e, "projects/delete");
   }
 }
 
@@ -447,8 +611,8 @@ const server = http.createServer(async (req: Req, res: Res) => {
   if (method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
     });
     return res.end();
   }
@@ -488,6 +652,41 @@ const server = http.createServer(async (req: Req, res: Res) => {
       return await handleModulesList(res);
     }
 
+    // GET /plans  (public tier catalog)
+    if (method === "GET" && url === "/plans") {
+      return await handlePlansList(res);
+    }
+
+    // Subscription API (requires auth)
+    if (method === "GET" && url === "/subscription") {
+      const user = getAuthUser(req);
+      if (!user) return json(res, 401, { success: false, error: "Not authenticated" });
+      return await handleGetSubscription(res, user);
+    }
+    if (method === "POST" && url === "/subscription/change") {
+      const user = getAuthUser(req);
+      if (!user) return json(res, 401, { success: false, error: "Not authenticated" });
+      return await handleChangePlan(req, res, user);
+    }
+
+    // Projects API (requires auth)
+    if (method === "GET" && url === "/projects") {
+      const user = getAuthUser(req);
+      if (!user) return json(res, 401, { success: false, error: "Not authenticated" });
+      return await handleListProjects(res, user);
+    }
+    if (method === "POST" && url === "/projects") {
+      const user = getAuthUser(req);
+      if (!user) return json(res, 401, { success: false, error: "Not authenticated" });
+      return await handleCreateProject(req, res, user);
+    }
+    const projectMatch = url.match(/^\/projects\/([0-9a-fA-F-]{36})$/);
+    if (method === "DELETE" && projectMatch) {
+      const user = getAuthUser(req);
+      if (!user) return json(res, 401, { success: false, error: "Not authenticated" });
+      return await handleDeleteProject(res, user, projectMatch[1]);
+    }
+
     // POST /audit  or  POST /audit/full  (requires a valid Bearer access token)
     if (method === "POST" && (url === "/audit" || url === "/audit/full")) {
       const user = getAuthUser(req);
@@ -512,8 +711,14 @@ const server = http.createServer(async (req: Req, res: Res) => {
         "POST /logout",
         "GET  /health",
         "GET  /audit/modules",
+        "GET  /plans",
         "POST /audit                (Bearer token)",
-        "POST /audit/module/:n      (n = 1-10, Bearer token)",
+        "POST /audit/module/:n      (n = 1-12, Bearer token)",
+        "GET  /subscription         (Bearer token)",
+        "POST /subscription/change  (Bearer token)",
+        "GET  /projects             (Bearer token)",
+        "POST /projects             (Bearer token)",
+        "DELETE /projects/:id       (Bearer token)",
       ],
     });
   } catch (e: any) {

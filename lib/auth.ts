@@ -29,6 +29,7 @@ import {
   findLiveSessionByHash,
   revokeSessionByHash,
 } from "./models/session.model";
+import { createSubscription } from "./models/subscription.model";
 import { signAccessToken, ACCESS_TTL_SEC } from "./jwt";
 
 const scrypt = promisify(crypto.scrypt) as (
@@ -137,6 +138,14 @@ export async function register(
     // Unique-violation race (two requests at once)
     if (e?.code === "23505") throw new AuthError(409, "That username or email is already taken.");
     throw e;
+  }
+
+  // Start every new user on the Free plan. Best-effort: a missing subscription is
+  // recreated lazily by the subscription service, so never block signup on it.
+  try {
+    await createSubscription({ userId: user.id, planId: "free" });
+  } catch (e: any) {
+    console.error("[register] subscription create failed (will be created lazily):", e.message);
   }
 
   const tokens = await issueTokens(user, meta);

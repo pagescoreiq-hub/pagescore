@@ -12,7 +12,7 @@ export type AuditTypeValue = "lp" | "website";
 export interface AuditRecord {
   id: string;
   user_id: string;
-  website_id: string;
+  website_id: string | null;
   url: string;
   audit_type: AuditTypeValue;
   overall_score: number;
@@ -27,7 +27,7 @@ export interface AuditRecord {
 
 export async function createAuditRecord(input: {
   userId: string;
-  websiteId: string;
+  websiteId: string | null;
   url: string;
   auditType: AuditTypeValue;
   overallScore: number;
@@ -45,7 +45,7 @@ export async function createAuditRecord(input: {
      returning *`,
     [
       input.userId,
-      input.websiteId,
+      input.websiteId ?? null,
       input.url,
       input.auditType,
       input.overallScore,

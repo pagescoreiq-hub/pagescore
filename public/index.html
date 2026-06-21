@@ -198,6 +198,63 @@
 
     .audit-meta { text-align: center; font-size: 12px; color: #a0aec0; padding: 12px 0 4px; }
 
+    /* ===== PLAN / USAGE BANNER ===== */
+    .plan-card { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+    .plan-id { display: flex; align-items: center; gap: 10px; }
+    .plan-badge { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; padding: 5px 12px; border-radius: 8px; background: linear-gradient(135deg,#3182ce,#2b6cb0); color: white; }
+    .plan-badge.free { background: #718096; }
+    .plan-meta { font-size: 11px; color: #a0aec0; }
+    .usage-wrap { display: flex; gap: 22px; flex: 1; flex-wrap: wrap; }
+    .usage-item { min-width: 130px; flex: 1; }
+    .usage-top { display: flex; justify-content: space-between; font-size: 11px; font-weight: 700; color: #718096; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 5px; }
+    .usage-top .uv { color: #2d3748; }
+    .usage-track { height: 7px; background: #edf2f7; border-radius: 99px; overflow: hidden; }
+    .usage-fill { height: 100%; border-radius: 99px; background: linear-gradient(90deg,#4299e1,#63b3ed); transition: width 0.5s ease; }
+    .usage-fill.warn { background: linear-gradient(90deg,#ed8936,#f6ad55); }
+    .usage-fill.full { background: linear-gradient(90deg,#e53e3e,#fc8181); }
+    .btn-plans { padding: 9px 16px; background: white; color: #3182ce; border: 2px solid #bee3f8; border-radius: 9px; font-size: 13px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+    .btn-plans:hover { background: #ebf8ff; }
+
+    /* ===== PROJECTS ===== */
+    .proj-empty { font-size: 13px; color: #a0aec0; padding: 6px 0; }
+    .proj-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1.5px solid #e2e8f0; border-radius: 10px; background: #fafafa; margin-bottom: 8px; }
+    .proj-main { flex: 1; min-width: 0; }
+    .proj-host { font-size: 13px; font-weight: 700; color: #2d3748; }
+    .proj-url { font-size: 11px; color: #a0aec0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .proj-re { font-size: 11px; color: #718096; white-space: nowrap; }
+    .btn-mini { padding: 7px 12px; border-radius: 8px; font-size: 12px; font-weight: 700; cursor: pointer; border: none; white-space: nowrap; }
+    .btn-mini.audit { background: #ebf8ff; color: #2b6cb0; }
+    .btn-mini.audit:hover { background: #bee3f8; }
+    .btn-mini.del { background: #fff5f5; color: #c53030; }
+    .btn-mini.del:hover { background: #fed7d7; }
+    .btn-save-proj { margin-top: 12px; padding: 11px 18px; background: white; color: #2b6cb0; border: 2px solid #bee3f8; border-radius: 9px; font-size: 13px; font-weight: 700; cursor: pointer; }
+    .btn-save-proj:hover { background: #ebf8ff; }
+    .btn-save-proj:disabled { opacity: 0.5; cursor: default; }
+
+    /* ===== PLANS MODAL ===== */
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(26,32,44,0.55); z-index: 200; padding: 30px 16px; overflow-y: auto; }
+    .modal-overlay.show { display: block; }
+    .modal { max-width: 1080px; margin: 0 auto; background: #f0f4f8; border-radius: 16px; padding: 26px; }
+    .modal-head { display: flex; align-items: center; margin-bottom: 20px; }
+    .modal-head h2 { font-size: 18px; font-weight: 800; color: #1a365d; }
+    .modal-close { margin-left: auto; background: white; border: 1.5px solid #e2e8f0; border-radius: 8px; width: 34px; height: 34px; font-size: 18px; cursor: pointer; color: #718096; }
+    .plans-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+    .plan-tile { background: white; border: 2px solid #e2e8f0; border-radius: 12px; padding: 18px; display: flex; flex-direction: column; }
+    .plan-tile.current { border-color: #4299e1; box-shadow: 0 0 0 3px rgba(66,153,225,0.15); }
+    .pt-name { font-size: 16px; font-weight: 800; color: #2d3748; }
+    .pt-tag { font-size: 10px; font-weight: 800; color: #2b6cb0; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 2px; min-height: 14px; }
+    .pt-list { list-style: none; margin: 12px 0; font-size: 12px; color: #4a5568; flex: 1; }
+    .pt-list li { padding: 4px 0; border-bottom: 1px solid #f0f4f8; display: flex; justify-content: space-between; gap: 8px; }
+    .pt-list li span { font-weight: 700; color: #2d3748; }
+    .btn-pick { padding: 10px; border-radius: 9px; font-size: 13px; font-weight: 700; cursor: pointer; border: none; background: linear-gradient(135deg,#3182ce,#2b6cb0); color: white; }
+    .btn-pick:disabled { background: #e2e8f0; color: #a0aec0; cursor: default; }
+
+    /* ===== TOAST ===== */
+    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); background: #2d3748; color: white; padding: 12px 22px; border-radius: 10px; font-size: 13px; font-weight: 600; box-shadow: 0 6px 20px rgba(0,0,0,0.25); opacity: 0; transition: all 0.25s; z-index: 300; pointer-events: none; }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .toast.err { background: #c53030; }
+    .toast.ok { background: #2f855a; }
+
     /* ===== RESPONSIVE ===== */
     @media (max-width: 700px) {
       .top-row { grid-template-columns: 1fr; }
@@ -205,6 +262,7 @@
       .dashboard-grid { grid-template-columns: 1fr; }
       .header { padding: 14px 18px; }
       .form-row { flex-direction: column; }
+      .plan-card { flex-direction: column; align-items: stretch; }
     }
   </style>
 </head>
@@ -224,6 +282,16 @@
 </header>
 
 <div class="container">
+
+  <!-- PLAN / USAGE BANNER -->
+  <div class="card plan-card" id="plan-card" style="display:none;">
+    <div class="plan-id">
+      <span class="plan-badge" id="plan-badge">—</span>
+      <div class="plan-meta" id="plan-meta"></div>
+    </div>
+    <div class="usage-wrap" id="usage-wrap"></div>
+    <button class="btn-plans" onclick="openPlans()">View plans</button>
+  </div>
 
   <!-- FORM -->
   <div class="card" id="form-card">
@@ -252,6 +320,14 @@
     </div>
     <div class="error-box" id="err-box"></div>
     <button class="btn-run" id="run-btn" onclick="startAudit()">Run Landing Page Audit</button>
+  </div>
+
+  <!-- PROJECTS -->
+  <div class="card" id="projects-card" style="display:none;">
+    <div class="card-title" style="margin-bottom:14px;">
+      📁 Projects <span id="proj-slots" style="font-weight:600;color:#a0aec0;text-transform:none;letter-spacing:0;font-size:12px;margin-left:6px;"></span>
+    </div>
+    <div id="projects-list"></div>
   </div>
 
   <!-- LOADING -->
@@ -311,10 +387,27 @@
     </div>
 
     <div class="audit-meta" id="audit-meta"></div>
+    <div style="text-align:center;">
+      <button class="btn-save-proj" id="save-proj-btn" onclick="saveCurrentAsProject()" style="display:none;">💾 Save as project</button>
+    </div>
     <button class="btn-reset" onclick="resetAudit()">← Run Another Audit</button>
   </div>
 
 </div>
+
+<!-- PLANS MODAL -->
+<div class="modal-overlay" id="plans-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>Subscription Plans</h2>
+      <button class="modal-close" onclick="closePlans()">×</button>
+    </div>
+    <div class="plans-grid" id="plans-grid"></div>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div class="toast" id="toast"></div>
 
 <script src="/auth.js"></script>
 <script>
@@ -332,8 +425,28 @@
     { n:8,  name:'Legal & Privacy',              weight:5,  impact:'HIGH'     },
     { n:9,  name:'Conversion & UX Quality',      weight:8,  impact:'MEDIUM'   },
     { n:10, name:'HTML & Form Validation',       weight:15, impact:'CRITICAL' },
+    { n:11, name:'Technical SEO',                weight:18, impact:'HIGH'     },
+    { n:12, name:'Domain & Server Health',       weight:18, impact:'HIGH'     },
   ];
   const ICONS = { PASS:'✅', FAIL:'❌', WARN:'⚠️' };
+
+  /* ── Subscription / projects state ── */
+  let SUB = null;          // GET /subscription payload
+  let PROJECTS = [];       // GET /projects payload
+  let PROJECT_HOSTS = new Set();
+  let lastAuditUrl = null; // last successfully audited URL (for "save as project")
+
+  function fmtLimit(n) { return n === null || n === undefined ? '∞' : n; }
+  function hostOf(u) { try { return new URL(u).hostname; } catch { return ''; } }
+
+  let _toastTimer = null;
+  function toast(msg, kind) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast show' + (kind ? ' ' + kind : '');
+    clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => { t.className = 'toast' + (kind ? ' ' + kind : ''); }, 3200);
+  }
 
   function scoreColor(s) { return s >= 80 ? '#38a169' : s >= 60 ? '#d69e2e' : '#e53e3e'; }
   function stateClass(s) { return s >= 80 ? 'passing' : s >= 60 ? 'warning' : 'failing'; }
@@ -420,8 +533,24 @@
       const json = await resp.json();
       stopProgress();
 
+      // Plan limits (audit / re-audit quota, locked modules/features) → guide to upgrade.
+      if ((resp.status === 402 || resp.status === 403) && !json.success) {
+        document.getElementById('loading-card').className = 'card';
+        document.getElementById('form-card').style.display = 'block';
+        document.getElementById('run-btn').disabled = false;
+        errEl.innerHTML = '🔒 ' + esc(json.error || 'Plan limit reached.') +
+          ' <a href="#" onclick="openPlans();return false;" style="font-weight:700;color:#2b6cb0;">View plans →</a>';
+        errEl.className = 'error-box show';
+        loadSubscription();
+        return;
+      }
+
       if (!resp.ok || !json.success) throw new Error(json.error || 'Audit failed');
+      lastAuditUrl = url;
       renderResults(json.data, json.durationMs, json.report);
+      updateSaveBtn();
+      loadSubscription();
+      loadProjects();
 
     } catch(e) {
       stopProgress();
@@ -577,6 +706,185 @@
   function doLogout() {
     PSIQAuth.logout();
   }
+
+  /* ════════ SUBSCRIPTION / USAGE BANNER ════════ */
+  async function loadSubscription() {
+    try {
+      const r = await PSIQAuth.authFetch('/subscription');
+      const j = await r.json();
+      if (!r.ok || !j.success) return;
+      SUB = j;
+      renderBanner();
+    } catch (_) {}
+  }
+
+  function usageBar(label, used, limit) {
+    const lim = (limit === null || limit === undefined);
+    const pct = lim ? 0 : Math.min(100, Math.round((used / Math.max(1, limit)) * 100));
+    const cls = lim ? '' : pct >= 100 ? 'full' : pct >= 80 ? 'warn' : '';
+    return `
+      <div class="usage-item">
+        <div class="usage-top"><span>${label}</span><span class="uv">${used} / ${fmtLimit(limit)}</span></div>
+        <div class="usage-track"><div class="usage-fill ${cls}" style="width:${lim ? 100 : pct}%"></div></div>
+      </div>`;
+  }
+
+  function renderBanner() {
+    if (!SUB) return;
+    const card = document.getElementById('plan-card');
+    card.style.display = 'flex';
+    const badge = document.getElementById('plan-badge');
+    badge.textContent = SUB.plan.name;
+    badge.className = 'plan-badge' + (SUB.plan.id === 'free' ? ' free' : '');
+    const end = new Date(SUB.currentPeriodEnd);
+    document.getElementById('plan-meta').textContent =
+      `${SUB.plan.modules.length} modules · resets ${end.toLocaleDateString()}`;
+    document.getElementById('usage-wrap').innerHTML =
+      usageBar('Audits', SUB.usage.audits.used, SUB.usage.audits.limit) +
+      usageBar('Projects', SUB.usage.projects.used, SUB.usage.projects.limit) +
+      usageBar('Add / delete', SUB.usage.projectChanges.used, SUB.usage.projectChanges.limit);
+  }
+
+  /* ════════ PROJECTS ════════ */
+  async function loadProjects() {
+    try {
+      const r = await PSIQAuth.authFetch('/projects');
+      const j = await r.json();
+      if (!r.ok || !j.success) return;
+      PROJECTS = j.projects || [];
+      PROJECT_HOSTS = new Set(PROJECTS.map(p => p.hostname));
+      renderProjects(j.slots);
+      updateSaveBtn();
+    } catch (_) {}
+  }
+
+  function renderProjects(slots) {
+    const card = document.getElementById('projects-card');
+    const list = document.getElementById('projects-list');
+    // Only show the projects card on plans that include project slots.
+    if (SUB && SUB.plan.max_projects <= 0) { card.style.display = 'none'; return; }
+    card.style.display = 'block';
+    document.getElementById('proj-slots').textContent =
+      slots ? `(${slots.used} / ${slots.limit} slots used)` : '';
+    if (!PROJECTS.length) {
+      list.innerHTML = `<div class="proj-empty">No saved projects yet. Run an audit, then “Save as project”.</div>`;
+      return;
+    }
+    list.innerHTML = PROJECTS.map(p => `
+      <div class="proj-row">
+        <div class="proj-main">
+          <div class="proj-host">${esc(p.hostname)}</div>
+          <div class="proj-url">${esc(p.url)}</div>
+        </div>
+        <div class="proj-re">re-audits ${p.reaudits.used}/${fmtLimit(p.reaudits.limit)}</div>
+        <button class="btn-mini audit" onclick="reauditProject('${encodeURIComponent(p.url)}')">Re-audit</button>
+        <button class="btn-mini del" onclick="deleteProject('${p.id}')">Delete</button>
+      </div>`).join('');
+  }
+
+  function updateSaveBtn() {
+    const btn = document.getElementById('save-proj-btn');
+    if (!btn) return;
+    const canSave = SUB && SUB.plan.max_projects > 0 && lastAuditUrl &&
+      !PROJECT_HOSTS.has(hostOf(lastAuditUrl));
+    btn.style.display = canSave ? 'inline-block' : 'none';
+  }
+
+  async function saveCurrentAsProject() {
+    if (!lastAuditUrl) return;
+    await saveProject(lastAuditUrl);
+  }
+
+  async function saveProject(url) {
+    try {
+      const r = await PSIQAuth.authFetch('/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.success) { toast(j.error || 'Could not save project', 'err'); return; }
+      toast('Project saved', 'ok');
+      await Promise.all([loadProjects(), loadSubscription()]);
+    } catch (e) { toast('Could not save project', 'err'); }
+  }
+
+  async function deleteProject(id) {
+    if (!confirm('Delete this project? This frees a slot but uses one monthly add/delete.')) return;
+    try {
+      const r = await PSIQAuth.authFetch('/projects/' + id, { method: 'DELETE' });
+      const j = await r.json();
+      if (!r.ok || !j.success) { toast(j.error || 'Could not delete', 'err'); return; }
+      toast('Project deleted', 'ok');
+      await Promise.all([loadProjects(), loadSubscription()]);
+    } catch (e) { toast('Could not delete', 'err'); }
+  }
+
+  function reauditProject(encUrl) {
+    const url = decodeURIComponent(encUrl);
+    document.getElementById('inp-url').value = url;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    startAudit();
+  }
+
+  /* ════════ PLANS MODAL ════════ */
+  async function openPlans() {
+    const modal = document.getElementById('plans-modal');
+    modal.className = 'modal-overlay show';
+    const grid = document.getElementById('plans-grid');
+    grid.innerHTML = '<div style="padding:20px;color:#718096;">Loading plans…</div>';
+    try {
+      const r = await PSIQAuth.authFetch('/plans');
+      const j = await r.json();
+      if (!r.ok || !j.success) { grid.innerHTML = '<div style="padding:20px;color:#c53030;">Failed to load plans.</div>'; return; }
+      renderPlans(j.plans);
+    } catch (e) { grid.innerHTML = '<div style="padding:20px;color:#c53030;">Failed to load plans.</div>'; }
+  }
+  function closePlans() { document.getElementById('plans-modal').className = 'modal-overlay'; }
+
+  function renderPlans(plans) {
+    const cur = SUB ? SUB.plan.id : null;
+    const grid = document.getElementById('plans-grid');
+    grid.innerHTML = plans.map(p => {
+      const isCur = p.id === cur;
+      return `
+      <div class="plan-tile ${isCur ? 'current' : ''}">
+        <div class="pt-name">${esc(p.name)}</div>
+        <div class="pt-tag">${isCur ? 'Current plan' : ''}</div>
+        <ul class="pt-list">
+          <li>Projects <span>${p.max_projects}</span></li>
+          <li>Audits / mo <span>${fmtLimit(p.monthly_audits)}</span></li>
+          <li>Re-audits / project <span>${fmtLimit(p.monthly_reaudits_per_project)}</span></li>
+          <li>Add / delete / mo <span>${fmtLimit(p.monthly_project_changes)}</span></li>
+          <li>Modules <span>${(p.modules || []).length}</span></li>
+          <li>Team members <span>${p.team_members}</span></li>
+          <li>PDF export <span>${p.features.pdf_export ? '✓' : '—'}</span></li>
+          <li>AI assistance <span>${p.features.ai_assistance ? '✓' : '—'}</span></li>
+        </ul>
+        <button class="btn-pick" ${isCur ? 'disabled' : ''} onclick="changePlan('${p.id}')">
+          ${isCur ? 'Selected' : 'Switch to ' + esc(p.name)}
+        </button>
+      </div>`;
+    }).join('');
+  }
+
+  async function changePlan(planId) {
+    try {
+      const r = await PSIQAuth.authFetch('/subscription/change', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ planId }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.success) { toast(j.error || 'Could not change plan', 'err'); return; }
+      toast('Switched to ' + j.plan.name, 'ok');
+      closePlans();
+      await Promise.all([loadSubscription(), loadProjects()]);
+    } catch (e) { toast('Could not change plan', 'err'); }
+  }
+
+  /* ── Init (subscription first so the projects card knows the plan) ── */
+  loadSubscription().then(loadProjects);
 
   document.getElementById('inp-url').addEventListener('keydown', e => { if(e.key==='Enter') startAudit(); });
 </script>
